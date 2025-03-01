@@ -41,27 +41,6 @@ interface AryaChatInterfaceProps {
 export default function AryaChatInterface({ topic: initialTopic, initialPrompt, category = 'General', difficulty = 'Beginner' }: AryaChatInterfaceProps) {
   const { user, loading } = useAuth()
   const router = useRouter()
-  const [messages, setMessages] = useState<Message[]>([
-    { id: uuidv4(), sender: 'ai', content: initialPrompt }
-  ]);
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [currentTopic, setCurrentTopic] = useState(initialTopic);
-  const [inputMessage, setInputMessage] = useState('');
-  const [showGrammarFeedback, setShowGrammarFeedback] = useState(false);
-  const [loadingAI, setLoadingAI] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [isListening, setIsListening] = useState(false);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null)
-  const [sessionDuration, setSessionDuration] = useState(0)
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-
-  useEffect(() => {
-    if (!loading && !user) {
-      router.push('/login')
-    }
-  }, [user, loading, router])
 
   if (loading) {
     return <div>Loading...</div>
@@ -70,6 +49,29 @@ export default function AryaChatInterface({ topic: initialTopic, initialPrompt, 
   if (!user) {
     return null
   }
+
+  const [messages, setMessages] = useState<Message[]>([
+    { id: uuidv4(), sender: 'ai', content: initialPrompt }
+  ]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [currentTopic, setCurrentTopic] = useState(initialTopic);
+  const [inputMessage, setInputMessage] = useState('');
+  const [showGrammarFeedback, setShowGrammarFeedback] = useState(false);
+  const [loadingAI, setLoadingAI] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
+  const [sessionDuration, setSessionDuration] = useState(0);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (!user) {
+      router.push('/login')
+    }
+  }, [user, router])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -82,25 +84,74 @@ export default function AryaChatInterface({ topic: initialTopic, initialPrompt, 
   }, [messages, sessionStartTime])
 
   useEffect(() => {
-    let interval: NodeJS.Timeout
+    let interval: NodeJS.Timeout | undefined;
     if (sessionStartTime) {
       interval = setInterval(() => {
         const now = new Date()
         const duration = Math.floor((now.getTime() - sessionStartTime.getTime()) / 1000)
         setSessionDuration(duration)
-        if (duration >= 90000) { // 15 minutes = 900 seconds now it is 25 hrs
+        if (duration >= 90000) {
           handleSessionComplete()
         }
       }, 1000)
     }
-    return () => clearInterval(interval)
+    return () => {
+      if (interval) {
+        clearInterval(interval)
+      }
+    }
   }, [sessionStartTime])
 
   useEffect(() => {
-    if (user && messages.length > 1 && !currentChatId) {
+    if (messages.length > 1 && !currentChatId) {
       createNewChat();
     }
-  }, [user, messages, currentChatId]);
+  }, [messages, currentChatId]);
+
+  useEffect(() => {
+    if (currentChatId && messages.length > 0) {
+      updateExistingChat();
+    }
+  }, [messages, currentChatId]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      if (recognitionRef.current) {
+        recognitionRef.current.continuous = true;
+        recognitionRef.current.interimResults = true;
+
+        recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
+          const transcript = Array.from(event.results)
+            .map(result => result[0].transcript)
+            .join('');
+          setInputMessage(transcript);
+          
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+            textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
+          }
+        };
+
+        recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
+          console.error('Speech recognition error', event.error);
+          setIsListening(false);
+        };
+
+        recognitionRef.current.onend = () => {
+          setIsListening(false);
+        };
+      }
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
   const handleNewChat = () => {
     setMessages([{ id: uuidv4(), sender: 'ai', content: initialPrompt }]);
@@ -160,12 +211,6 @@ export default function AryaChatInterface({ topic: initialTopic, initialPrompt, 
       });
     }
   };
-
-  useEffect(() => {
-    if (currentChatId && messages.length > 0) {
-      updateExistingChat();
-    }
-  }, [messages]);
 
   const handleChatSelect = async (chat: Chat) => {
     try {
@@ -452,49 +497,6 @@ export default function AryaChatInterface({ topic: initialTopic, initialPrompt, 
     }
     setInputMessage(''); // Clear the input field
   };
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      if (recognitionRef.current) {
-        recognitionRef.current.continuous = true;
-        recognitionRef.current.interimResults = true;
-
-        recognitionRef.current.onresult = (event: SpeechRecognitionEvent) => {
-          const transcript = Array.from(event.results)
-            .map(result => result[0].transcript)
-            .join('');
-          setInputMessage(transcript);
-          
-          // Auto-resize the textarea when speech input is received
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
-            // Ensure the textarea scrolls to the bottom
-            textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
-          }
-        };
-
-        recognitionRef.current.onerror = (event: SpeechRecognitionErrorEvent) => {
-          console.error('Speech recognition error', event.error);
-          setIsListening(false);
-        };
-
-        recognitionRef.current.onend = () => {
-          setIsListening(false);
-        };
-      }
-    } else {
-      console.log('Speech recognition not supported');
-    }
-
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-    };
-  }, []);
 
   const toggleListening = () => {
     if (recognitionRef.current) {
