@@ -2,7 +2,11 @@ export interface Message {
   text: string;
   type: 'user' | 'ai';
   timestamp: Date;
-  grammarFeedback?: string;
+  grammarFeedback?: {
+    grammar: string;
+    suggestions: string;
+    coherence: string;
+  };
 }
 
 export interface VoiceAssistantProps {
