@@ -40,6 +40,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { db } from '@/lib/firebase'
 import { doc, onSnapshot, updateDoc, setDoc, Timestamp, getDoc, arrayUnion } from 'firebase/firestore'
+import { CourseOverview } from '@/components/language-learning'
+import { Calendar as UiCalendar } from "@/components/ui/calendar"
 
 // Import the ContributionGraph component
 const ContributionGraph = dynamic(() => import('@/components/ContributionGraph'), { ssr: false })
@@ -66,12 +68,6 @@ const grammarActivities = [
   { name: 'Grammar Lessons', icon: Target, color: 'bg-red-500' },
   { name: 'Grammar Correction', icon: CheckCircle2, color: 'bg-green-500' },
   { name: 'Grammar Quizzes', icon: Lightbulb, color: 'bg-yellow-500' },
-]
-
-const challengeTracks = [
-  { id: '10days', name: '10 Days Challenge', days: 10 },
-  { id: '20days', name: '20 Days Mastery', days: 20 },
-  { id: '30days', name: '30 Days Fluency', days: 30 },
 ]
 
 // Add this interface at the top of the file
@@ -343,8 +339,8 @@ export function UserPageComponent() {
   }
 
   const getActiveTrackDays = () => {
-    const track = challengeTracks.find(t => t.id === activeTrack)
-    return track ? track.days : 0
+    const track = learningTracks.find(t => t.name === activeTrack)
+    return track ? 1 : 0
   }
 
   const handleTalkToArya = () => {
@@ -363,9 +359,11 @@ export function UserPageComponent() {
     }
   }
 
-  // Function to handle date selection
+  // Update handleDateSelect to work with Calendar component
   const handleDateSelect = (dates: Date[] | undefined) => {
-    setSelectedDates(dates || []);
+    if (dates) {
+      setSelectedDates(dates)
+    }
   }
 
   // Effect to update completed days when selectedDates changes
@@ -569,8 +567,7 @@ export function UserPageComponent() {
                         Complete Today
                       </Button> */}
                     </div>
-                    <Calendar
-                      mode="multiple"
+                    <UiCalendar
                       selected={selectedDates}
                       onSelect={handleDateSelect}
                       className="rounded-md border"
@@ -605,53 +602,15 @@ export function UserPageComponent() {
               </CardContent>
             </Card>
 
-            <Card className="bg-indigo-50 border-indigo-100">
+            {/* Replace Challenge Tracks with CourseOverview */}
+            <Card className="bg-white shadow-lg">
               <CardHeader>
-                <CardTitle className="text-indigo-900">Challenge Tracks</CardTitle>
+                <CardTitle className="text-2xl font-semibold">Language Learning Course</CardTitle>
               </CardHeader>
-              <CardContent>
-                <div className="mb-4">
-                  <label htmlFor="track-select" className="block text-sm font-medium text-indigo-700 mb-2">
-                    Choose a Challenge Track
-                  </label>
-                  <Select onValueChange={handleTrackChange} value={activeTrack || undefined}>
-                    <SelectTrigger id="track-select">
-                      <SelectValue placeholder="Select a track" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {challengeTracks.map((track) => (
-                        <SelectItem key={track.id} value={track.id}>
-                          {track.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              <CardContent className="p-0">
+                <div onClick={() => router.push('/language-learning/unit-roadmap')} className="cursor-pointer">
+                  <CourseOverview />
                 </div>
-                {activeTrack && (
-                  <div className="bg-white p-4 rounded-lg shadow">
-                    <div className="flex justify-between items-center mb-2">
-                      <h3 className="font-semibold text-indigo-900">
-                        {challengeTracks.find(t => t.id === activeTrack)?.name}
-                      </h3>
-                      <div className="flex items-center text-indigo-600">
-                        <Calendar className="w-4 h-4 mr-1" />
-                        <span className="text-sm">{getActiveTrackDays()} Days</span>
-                      </div>
-                    </div>
-                    <Progress value={(trackProgress / getActiveTrackDays()) * 100} className="h-2 mb-2" />
-                    <div className="flex justify-between text-sm text-indigo-700">
-                      <span>{trackProgress} days completed</span>
-                      <span>{getActiveTrackDays() - trackProgress} days left</span>
-                    </div>
-                  </div>
-                )}
-                <Button 
-                  className="w-full mt-4 bg-indigo-600 hover:bg-indigo-700 text-white"
-                  onClick={() => setTrackProgress(prev => Math.min(prev + 1, getActiveTrackDays()))}
-                  disabled={!activeTrack}
-                >
-                  {activeTrack ? "Complete Today's Challenge" : "Select a Challenge to Start"}
-                </Button>
               </CardContent>
             </Card>
 
