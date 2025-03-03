@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useToast } from '@/components/ui/use-toast';
 import LessonUI, { Lesson } from './LessonUI';
 import TestUI, { TestQuestion } from './TestUI';
+import { useAuth } from '@/contexts/AuthContext';
+import { db } from '@/lib/firebase';
+import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import courseProgressService from '@/lib/services/courseProgressService';
 
 interface Chapter {
   id: number;
@@ -44,6 +48,7 @@ const LearningPathJourney: React.FC<LearningPathJourneyProps> = ({
 }) => {
   const router = useRouter();
   const { toast } = useToast();
+  const { user } = useAuth();
   
   // State management
   const [activeUnit, setActiveUnit] = useState(initialUnitId);
@@ -52,6 +57,8 @@ const LearningPathJourney: React.FC<LearningPathJourneyProps> = ({
   const [showAchievement, setShowAchievement] = useState(false);
   const [showTooltip, setShowTooltip] = useState<number | null>(null);
   const [animatePath, setAnimatePath] = useState(true);
+  const [currentLessons, setCurrentLessons] = useState<Lesson[]>([]);
+  const [loadingLessons, setLoadingLessons] = useState(false);
 
   // Sample data - in a real app, this would likely come from a database
   const units: Unit[] = [
@@ -229,21 +236,131 @@ const LearningPathJourney: React.FC<LearningPathJourneyProps> = ({
     setTimeout(() => setAnimatePath(true), 50);
   }, [activeUnit]);
 
-  const getLessonsForChapter = (chapterId: number): Lesson[] => {
-    const unitIndex = units.findIndex(u => u.id === activeUnit);
-    const chapterIndex = units[unitIndex]?.chapters.findIndex(c => c.id === chapterId);
+  useEffect(() => {
+    const fetchUserProgress = async () => {
+      if (!user) return;
+      
+      try {
+        // Fetch user stats
+        const userStats = await courseProgressService.getUserStats(user.uid);
+        
+        if (userStats) {
+          // Update units with progress data
+          const updatedUnits = [...units];
+          
+          for (const unit of updatedUnits) {
+            // Calculate unit progress based on completed chapters
+            let completedChapters = 0;
+            
+            for (const chapter of unit.chapters) {
+              // Check if this chapter is completed
+              const chapterProgress = await courseProgressService.getChapterProgress(user.uid, chapter.id.toString());
+              
+              if (chapterProgress) {
+                const lessonIds = Object.keys(chapterProgress);
+                const totalLessons = lessonIds.length;
+                const completedLessons = lessonIds.filter(id => chapterProgress[id].completed).length;
+                
+                // Update chapter completion status
+                chapter.completed = completedLessons > 0 && completedLessons === totalLessons;
+                
+                if (chapter.completed) {
+                  completedChapters++;
+                }
+              }
+            }
+            
+            // Update unit progress percentage
+            unit.progress = unit.chapters.length > 0 
+              ? Math.round((completedChapters / unit.chapters.length) * 100) 
+              : 0;
+          }
+          
+          // Update state with progress data
+          // Note: You'll need to add a setUnits state setter
+        }
+      } catch (error) {
+        console.error('Error fetching user progress:', error);
+      }
+    };
     
-    if (unitIndex >= 0 && chapterIndex >= 0) {
-      return sampleLessons[unitIndex] || sampleLessons[0];
+    fetchUserProgress();
+  }, [user]);
+
+  const getLessonsForChapter = async (chapterId: number): Promise<Lesson[]> => {
+    // Get the sample lessons for this chapter
+    const chapterLessons = sampleLessons[chapterId - 1] || [];
+    
+    if (!user) return chapterLessons;
+    
+    try {
+      // Fetch progress for all lessons in this chapter
+      const updatedLessons = [...chapterLessons];
+      
+      for (let i = 0; i < updatedLessons.length; i++) {
+        const lesson = updatedLessons[i];
+        const progressRef = doc(db, 'users', user.uid, 'progress', `${chapterId}_${lesson.id}`);
+        const progressDoc = await getDoc(progressRef);
+        
+        if (progressDoc.exists()) {
+          const progressData = progressDoc.data();
+          
+          // Update lesson with progress data
+          updatedLessons[i] = {
+            ...lesson,
+            isCompleted: progressData.completed || false,
+            isLocked: i === 0 ? false : !updatedLessons[i-1].isCompleted && !progressData.unlocked
+          };
+        } else {
+          // If no progress data, first lesson is unlocked, others are locked
+          updatedLessons[i] = {
+            ...lesson,
+            isLocked: i !== 0 && !updatedLessons[i-1]?.isCompleted
+          };
+          
+          // Initialize lesson progress in Firebase
+          if (user) {
+            courseProgressService.initializeLessonProgress(
+              user.uid, 
+              chapterId.toString(), 
+              lesson.id.toString(), 
+              i === 0 // First lesson is automatically unlocked
+            ).catch(error => console.error('Error initializing lesson progress:', error));
+          }
+        }
+      }
+      
+      return updatedLessons;
+    } catch (error) {
+      console.error('Error fetching lesson progress:', error);
+      return chapterLessons;
     }
-    return sampleLessons[0];
   };
 
-  const handleChapterClick = (chapterId: number) => {
+  const handleChapterClick = async (chapterId: number) => {
     setActiveChapter(chapterId);
-    if (Math.random() > 0.7) {
-      setShowAchievement(true);
-      setTimeout(() => setShowAchievement(false), 3000);
+    setLoadingLessons(true);
+    
+    try {
+      // Fetch lessons for this chapter
+      const lessons = await getLessonsForChapter(chapterId);
+      setCurrentLessons(lessons);
+      console.log(`Loaded ${lessons.length} lessons for chapter ${chapterId}`);
+      
+      // Show achievement randomly
+      if (Math.random() > 0.7) {
+        setShowAchievement(true);
+        setTimeout(() => setShowAchievement(false), 3000);
+      }
+    } catch (error) {
+      console.error('Error loading lessons:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load lessons. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoadingLessons(false);
     }
   };
 
@@ -319,7 +436,7 @@ const LearningPathJourney: React.FC<LearningPathJourneyProps> = ({
 
   // Display lesson UI if a chapter is selected
   if (activeChapter > 0) {
-    const currentUnit = units.find(u => u.id === activeUnit);
+    const currentUnit = units.find(u => u.chapters.some(c => c.id === activeChapter));
     const currentChapter = currentUnit?.chapters.find(c => c.id === activeChapter);
     
     if (currentChapter) {
@@ -327,7 +444,7 @@ const LearningPathJourney: React.FC<LearningPathJourneyProps> = ({
         <LessonUI
           chapterId={currentChapter.id}
           chapterTitle={currentChapter.title}
-          lessons={getLessonsForChapter(currentChapter.id)}
+          lessons={currentLessons}
           onBack={handleBackFromLessons}
         />
       );

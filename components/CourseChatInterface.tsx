@@ -14,6 +14,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { db } from '@/lib/firebase'
 import { doc, updateDoc, increment, getDoc, Timestamp, arrayUnion, setDoc } from 'firebase/firestore'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog"
+import courseProgressService from '@/lib/services/courseProgressService'
 
 interface Message {
   id: number;
@@ -69,8 +70,14 @@ export default function CourseChatInterface({
   useEffect(() => {
     if (messages.length > 1 && !sessionStartTime) {
       setSessionStartTime(new Date());
+      
+      // Mark lesson as started in Firebase
+      if (user) {
+        courseProgressService.startLessonSession(user.uid, chapterId, lessonId)
+          .catch(error => console.error('Error marking lesson as started:', error));
+      }
     }
-  }, [messages, sessionStartTime]);
+  }, [messages, sessionStartTime, user, chapterId, lessonId]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -96,42 +103,14 @@ export default function CourseChatInterface({
     try {
       if (!user) return;
 
-      // Update lesson progress
-      const lessonProgressRef = doc(db, 'users', user.uid, 'progress', `${chapterId}_${lessonId}`);
-      await setDoc(lessonProgressRef, {
-        completed: true,
-        lastAttempt: Timestamp.now(),
-        minutesSpent: Math.floor(sessionDuration / 60),
-        messages: messages.map(m => ({
-          ...m,
-          timestamp: Timestamp.fromDate(m.timestamp)
-        })),
-        completedAt: Timestamp.now()
-      }, { merge: true });
-
-      // Unlock next lesson
-      const nextLessonId = parseInt(lessonId) + 1;
-      const nextLessonRef = doc(db, 'users', user.uid, 'progress', `${chapterId}_${nextLessonId}`);
-      await setDoc(nextLessonRef, {
-        unlocked: true,
-        unlockedAt: Timestamp.now()
-      }, { merge: true });
-
-      // Update user stats
-      const userDocRef = doc(db, 'users', user.uid);
-      await updateDoc(userDocRef, {
-        totalMinutes: increment(Math.floor(sessionDuration / 60)),
-        lessonsCompleted: increment(1),
-        lastCompletedLesson: `${chapterId}_${lessonId}`,
-        lastActiveDay: new Date().toISOString().split('T')[0],
-        [`activityLog.${new Date().toISOString().split('T')[0]}`]: increment(1),
-        weeklyProgress: arrayUnion({
-          day: new Date().toLocaleString('en-US', { weekday: 'short' }),
-          minutes: Math.floor(sessionDuration / 60),
-          lessonId: `${chapterId}_${lessonId}`,
-          timestamp: new Date().toISOString()
-        })
-      });
+      // Use the service to complete the lesson and unlock the next one
+      await courseProgressService.completeLessonAndUnlockNext(
+        user.uid,
+        chapterId,
+        lessonId,
+        sessionDuration,
+        messages
+      );
     } catch (error) {
       console.error('Error updating progress:', error);
     }
@@ -154,7 +133,16 @@ export default function CourseChatInterface({
     setMessages(prevMessages => [...prevMessages, newUserMessage]);
     setInputMessage('');
 
+    // Save user message to Firebase
+    if (user) {
+      courseProgressService.saveChatMessage(user.uid, chapterId, lessonId, newUserMessage)
+        .catch(error => console.error('Error saving user message:', error));
+    }
+
+    setLoadingAI(true);
     const aiResponse = await generateAIResponse(inputMessage);
+    setLoadingAI(false);
+    
     const newAiMessage: Message = {
       id: messages.length + 2,
       sender: 'ai',
@@ -163,6 +151,12 @@ export default function CourseChatInterface({
     };
     
     setMessages(prevMessages => [...prevMessages, newAiMessage]);
+    
+    // Save AI message to Firebase
+    if (user) {
+      courseProgressService.saveChatMessage(user.uid, chapterId, lessonId, newAiMessage)
+        .catch(error => console.error('Error saving AI message:', error));
+    }
     
     const feedback = await generateGrammarFeedback(inputMessage);
     
@@ -173,6 +167,16 @@ export default function CourseChatInterface({
           : msg
       )
     );
+
+    // Update user message with feedback in Firebase
+    if (user && feedback) {
+      const updatedMessage = {
+        ...newUserMessage,
+        grammarFeedback: feedback
+      };
+      courseProgressService.saveChatMessage(user.uid, chapterId, lessonId, updatedMessage)
+        .catch(error => console.error('Error saving updated user message with feedback:', error));
+    }
 
     speak(aiResponse);
   };
@@ -316,6 +320,43 @@ export default function CourseChatInterface({
 
   const getProgressPercentage = () => {
     return Math.min((sessionDuration / LESSON_DURATION) * 100, 100);
+  };
+
+  const toggleSpeechRecognition = () => {
+    if (!('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
+      alert('Speech recognition is not supported in your browser.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+    
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      const transcript = Array.from(event.results)
+        .map(result => result[0])
+        .map(result => result.transcript)
+        .join('');
+      
+      setInputMessage(transcript);
+    };
+    
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+    
+    recognition.start();
+    recognitionRef.current = recognition;
+    setIsListening(true);
   };
 
   return (

@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { MessageSquare, Phone, Lock, Ear, ArrowLeft, MoreVertical } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { useAuth } from '@/contexts/AuthContext';
+import { db } from '@/lib/firebase';
+import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
 
 export interface Lesson {
   id: number;
@@ -13,6 +16,8 @@ export interface Lesson {
   iconType: 'ear' | 'speech' | 'other';
   hasAudio?: boolean;
   hasChat?: boolean;
+  minutesSpent?: number;
+  lastAttempt?: Date;
 }
 
 interface LessonUIProps {
@@ -25,10 +30,65 @@ interface LessonUIProps {
 const LessonUI: React.FC<LessonUIProps> = ({ 
   chapterId, 
   chapterTitle, 
-  lessons, 
+  lessons: initialLessons, 
   onBack 
 }) => {
   const router = useRouter();
+  const { user } = useAuth();
+  const [lessons, setLessons] = useState<Lesson[]>(initialLessons);
+  const [loading, setLoading] = useState(true);
+  
+  useEffect(() => {
+    const fetchLessonProgress = async () => {
+      if (!user) {
+        setLessons(initialLessons);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        // Create a copy of the initial lessons
+        const updatedLessons = [...initialLessons];
+        
+        // Fetch progress for all lessons in this chapter
+        for (let i = 0; i < updatedLessons.length; i++) {
+          const lesson = updatedLessons[i];
+          const progressRef = doc(db, 'users', user.uid, 'progress', `${chapterId}_${lesson.id}`);
+          const progressDoc = await getDoc(progressRef);
+          
+          if (progressDoc.exists()) {
+            const progressData = progressDoc.data();
+            
+            // Update lesson with progress data
+            updatedLessons[i] = {
+              ...lesson,
+              isCompleted: progressData.completed || false,
+              isLocked: i === 0 ? false : !updatedLessons[i-1].isCompleted && !progressData.unlocked,
+              minutesSpent: progressData.minutesSpent || 0,
+              lastAttempt: progressData.lastAttempt ? new Date(progressData.lastAttempt.toDate()) : undefined
+            };
+          } else {
+            // If no progress data, first lesson is unlocked, others are locked
+            updatedLessons[i] = {
+              ...lesson,
+              isLocked: i !== 0 && !updatedLessons[i-1]?.isCompleted
+            };
+          }
+        }
+        
+        setLessons(updatedLessons);
+      } catch (error) {
+        console.error('Error fetching lesson progress:', error);
+        // Fallback to initial lessons if there's an error
+        setLessons(initialLessons);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    fetchLessonProgress();
+  }, [user, chapterId, initialLessons]);
+  
   const completedCount = lessons.filter(lesson => lesson.isCompleted).length;
   
   const getLessonIcon = (iconType: string) => {
@@ -68,6 +128,24 @@ const LessonUI: React.FC<LessonUIProps> = ({
     }
   };
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-indigo-500 to-indigo-600 pb-10">
+        <div className="p-4 flex items-center justify-between">
+          <button onClick={onBack} className="text-white">
+            <ArrowLeft size={24} />
+          </button>
+        </div>
+        <div className="flex items-center justify-center h-[80vh]">
+          <div className="text-center text-white">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4"></div>
+            <p>Loading lessons...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-indigo-500 to-indigo-600 pb-10">
       {/* Header */}
@@ -103,6 +181,12 @@ const LessonUI: React.FC<LessonUIProps> = ({
               <div className="flex-1">
                 <h3 className="font-medium text-gray-800">{lesson.title}</h3>
                 {lesson.description && <p className="text-sm text-gray-600">{lesson.description}</p>}
+                {lesson.minutesSpent && lesson.minutesSpent > 0 && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Time spent: {lesson.minutesSpent} min
+                    {lesson.lastAttempt && ` • Last attempt: ${lesson.lastAttempt.toLocaleDateString()}`}
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
                 {lesson.hasChat && (
