@@ -1,6 +1,6 @@
-
 import React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { MessageSquare, Phone, Lock, Ear, ArrowLeft, MoreVertical } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 
@@ -28,6 +28,7 @@ const LessonUI: React.FC<LessonUIProps> = ({
   lessons, 
   onBack 
 }) => {
+  const router = useRouter();
   const completedCount = lessons.filter(lesson => lesson.isCompleted).length;
   
   const getLessonIcon = (iconType: string) => {
@@ -50,6 +51,20 @@ const LessonUI: React.FC<LessonUIProps> = ({
             <MessageSquare className="text-white" size={28} />
           </div>
         );
+    }
+  };
+
+  const handleChatClick = (lesson: Lesson) => {
+    if (!lesson.isLocked) {
+      // Navigate to chat interface with lesson data
+      router.push(`/language-learning/learning-path/${chapterId}/lessons/${lesson.id}/chat`);
+    }
+  };
+
+  const handleVoiceClick = (lesson: Lesson) => {
+    if (!lesson.isLocked) {
+      // Navigate to voice assistant with lesson data
+      router.push(`/lessons/${chapterId}/${lesson.id}/voice`);
     }
   };
 
@@ -91,12 +106,20 @@ const LessonUI: React.FC<LessonUIProps> = ({
               </div>
               <div className="flex gap-2">
                 {lesson.hasChat && (
-                  <button className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
+                  <button 
+                    className={`p-2 ${lesson.isLocked ? 'bg-gray-100 text-gray-500' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'} rounded-lg transition-colors`}
+                    onClick={() => handleChatClick(lesson)}
+                    disabled={lesson.isLocked}
+                  >
                     <MessageSquare size={18} />
                   </button>
                 )}
                 {lesson.hasAudio && (
-                  <button className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
+                  <button 
+                    className={`p-2 ${lesson.isLocked ? 'bg-gray-100 text-gray-500' : 'bg-indigo-100 text-indigo-600 hover:bg-indigo-200'} rounded-lg transition-colors`}
+                    onClick={() => handleVoiceClick(lesson)}
+                    disabled={lesson.isLocked}
+                  >
                     <Phone size={18} />
                   </button>
                 )}

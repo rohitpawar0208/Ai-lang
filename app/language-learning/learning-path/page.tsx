@@ -3,9 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { LearningPathJourney } from '@/components/language-learning';
 
-export default function LearningPathPage({ params }: { params: { unitId: string } }) {
+export default function LearningPathPage() {
   const router = useRouter();
-  const unitId = parseInt(params.unitId, 10);
 
   const handleChangeUnit = (newUnitId: number) => {
     router.push(`/language-learning/learning-path/${newUnitId}`);
@@ -15,9 +14,10 @@ export default function LearningPathPage({ params }: { params: { unitId: string 
     router.push('/language-learning/unit-roadmap');
   };
 
+  // Default to first unit if no unit is specified
   return (
     <LearningPathJourney 
-      unitId={unitId}
+      unitId={1}
       onChangeUnit={handleChangeUnit}
       onBack={handleBack}
     />
