@@ -1,5 +1,5 @@
 'use client'
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -14,6 +14,8 @@ interface Message {
   grammarFeedback?: string;
   correction?: string;
   tone?: 'Formal' | 'Informal' | 'Friendly';
+  suggestions?: string[];
+  toneVariations?: Record<string, string>;
 }
 
 interface GrammarCorrectionOption {
@@ -44,37 +46,64 @@ const GrammarCorrectionPage: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentMessage, setCurrentMessage] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (currentMessage.trim()) {
-      const newMessage: Message = {
-        id: Date.now(),
-        text: currentMessage,
-        grammarFeedback: getGrammarFeedback(currentMessage),
-        correction: getCorrectedMessage(currentMessage),
-      };
-      setMessages([...messages, newMessage]);
-      setCurrentMessage('');
-    }
-  };
+      try {
+        const response = await fetch('/api/tone-correction', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            text: currentMessage,
+          }),
+        });
 
-  const getGrammarFeedback = (text: string): string => {
-    // This is a placeholder. In a real app, you'd use a grammar checking API.
-    if (text.toLowerCase().includes('not i am')) {
-      return 'The correct order is "I am not."';
-    }
-    return 'No Grammar mistakes were found. Good job! 😃';
-  };
+        if (!response.ok) {
+          throw new Error('Failed to get corrections');
+        }
 
-  const getCorrectedMessage = (text: string): string => {
-    // This is a placeholder. In a real app, you'd use a grammar correction API.
-    return text.replace(/not i am/i, 'I am not');
+        const data = await response.json();
+        
+        const newMessage: Message = {
+          id: Date.now(),
+          text: currentMessage,
+          grammarFeedback: data.grammarFeedback.errors.length > 0 
+            ? data.grammarFeedback.errors.join('\n') 
+            : 'No Grammar mistakes were found. Good job! 😃',
+          correction: data.corrections.formal, // Default to formal correction
+          suggestions: data.grammarFeedback.suggestions,
+          toneVariations: {
+            Formal: data.corrections.formal,
+            Informal: data.corrections.informal,
+            Friendly: data.corrections.friendly,
+          }
+        };
+        
+        setMessages([...messages, newMessage]);
+        setCurrentMessage('');
+      } catch (error) {
+        console.error('Error getting corrections:', error);
+        // Handle error appropriately
+      }
+    }
   };
 
   const handleToneSelection = (id: number, tone: 'Formal' | 'Informal' | 'Friendly') => {
-    setMessages(messages.map(msg => 
-      msg.id === id ? { ...msg, tone } : msg
-    ));
+    setMessages(messages.map(msg => {
+      if (msg.id === id) {
+        return {
+          ...msg,
+          tone,
+          correction: msg.toneVariations?.[tone] || msg.correction
+        };
+      }
+      return msg;
+    }));
   };
 
   const getToneVariant = (message: Message, tone: 'Formal' | 'Informal' | 'Friendly') => {
@@ -89,6 +118,104 @@ const GrammarCorrectionPage: React.FC = () => {
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
   };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      chunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        await handleAudioUpload(audioBlob);
+        
+        // Clean up the stream
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const handleAudioUpload = async (audioBlob: Blob) => {
+    try {
+      // Convert blob to base64
+      const reader = new FileReader();
+      reader.readAsDataURL(audioBlob);
+      reader.onloadend = async () => {
+        const base64Audio = reader.result?.toString().split(',')[1];
+        
+        if (base64Audio) {
+          const response = await fetch('/api/STT', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              audio: base64Audio,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to transcribe audio');
+          }
+
+          const data = await response.json();
+          setCurrentMessage(data.text);
+        }
+      };
+    } catch (error) {
+      console.error('Error uploading audio:', error);
+    }
+  };
+
+  const handleMicClick = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  // Handle keyboard events
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSendMessage();
+      }
+    };
+
+    // Add event listener to input
+    const inputElement = inputRef.current;
+    if (inputElement) {
+      inputElement.addEventListener('keypress', handleKeyPress);
+    }
+
+    // Cleanup
+    return () => {
+      if (inputElement) {
+        inputElement.removeEventListener('keypress', handleKeyPress);
+      }
+    };
+  }, [currentMessage]); // Add currentMessage as dependency
 
   return (
     <div className="flex flex-col h-screen bg-gray-100">
@@ -196,8 +323,12 @@ const GrammarCorrectionPage: React.FC = () => {
             placeholder="Type your message..."
             className="flex-grow"
           />
-          <Button onClick={() => {}} variant="outline">
-            <Mic className="h-4 w-4" />
+          <Button 
+            onClick={handleMicClick} 
+            variant="outline"
+            className={isRecording ? "bg-red-500 text-white hover:bg-red-600" : ""}
+          >
+            <Mic className={`h-4 w-4 ${isRecording ? "animate-pulse" : ""}`} />
           </Button>
           <Button onClick={handleSendMessage}>
             <Send className="h-4 w-4" />
