@@ -61,7 +61,9 @@ export default function CourseChatInterface({
   const [sessionDuration, setSessionDuration] = useState(0);
   const [lessonCompleted, setLessonCompleted] = useState(false);
   const [showCompletionDialog, setShowCompletionDialog] = useState(false);
+  const [showExitDialog, setShowExitDialog] = useState(false);
   const LESSON_DURATION = 15 * 60; // 15 minutes in seconds
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -99,20 +101,26 @@ export default function CourseChatInterface({
   const handleLessonComplete = async () => {
     setLessonCompleted(true);
     setShowCompletionDialog(true);
+    setFirebaseError(null);
     
     try {
       if (!user) return;
 
       // Use the service to complete the lesson and unlock the next one
-      await courseProgressService.completeLessonAndUnlockNext(
+      const success = await courseProgressService.completeLessonAndUnlockNext(
         user.uid,
         chapterId,
         lessonId,
         sessionDuration,
         messages
       );
+      
+      if (!success) {
+        setFirebaseError("Unable to save your progress due to permission issues. Your progress will be available only in this session.");
+      }
     } catch (error) {
       console.error('Error updating progress:', error);
+      setFirebaseError("Failed to save progress. Please try again later.");
     }
   };
 
@@ -281,14 +289,77 @@ export default function CourseChatInterface({
     }
   };
 
-  const handleBack = async () => {
-    if (sessionStartTime) {
-      if (window.confirm("Are you sure you want to end this session?")) {
-        await handleLessonComplete();
-        router.back();
-      }
+  const handleBack = () => {
+    if (sessionStartTime && !lessonCompleted) {
+      setShowExitDialog(true);
     } else {
-      router.back();
+      router.push(`/language-learning/learning-path/${chapterId}`);
+    }
+  };
+
+  // Add this function to save progress to localStorage as a fallback
+  const saveProgressToLocalStorage = () => {
+    if (sessionDuration <= 0) return;
+    
+    try {
+      const localProgress = {
+        chapterId,
+        lessonId,
+        minutesSpent: Math.floor(sessionDuration / 60),
+        messages: messages,
+        lastAttempt: new Date().toISOString(),
+        timestamp: new Date().toISOString()
+      };
+      
+      localStorage.setItem(`lesson_progress_${chapterId}_${lessonId}`, JSON.stringify(localProgress));
+      console.log('Progress saved to localStorage as fallback');
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+    }
+  };
+
+  // Update the handleConfirmExit function
+  const handleConfirmExit = async () => {
+    setFirebaseError(null);
+    
+    try {
+      if (!user) {
+        router.push(`/language-learning/learning-path/${chapterId}`);
+        return;
+      }
+
+      // Save partial progress using the service
+      const success = await courseProgressService.savePartialProgress(
+        user.uid,
+        chapterId,
+        lessonId,
+        sessionDuration,
+        messages
+      );
+      
+      if (!success) {
+        // If Firebase save fails, save to localStorage as fallback
+        saveProgressToLocalStorage();
+        
+        // Show error and navigate back
+        setFirebaseError("Unable to save your progress to the cloud. Your progress has been saved locally.");
+        setTimeout(() => {
+          router.push(`/language-learning/learning-path/${chapterId}`);
+        }, 3000);
+      } else {
+        // Navigate back to the lessons page
+        router.push(`/language-learning/learning-path/${chapterId}`);
+      }
+    } catch (error) {
+      console.error('Error saving progress:', error);
+      
+      // Try localStorage as fallback
+      saveProgressToLocalStorage();
+      
+      setFirebaseError("Failed to save progress to the cloud. Your progress has been saved locally.");
+      setTimeout(() => {
+        router.push(`/language-learning/learning-path/${chapterId}`);
+      }, 3000);
     }
   };
 
@@ -358,6 +429,31 @@ export default function CourseChatInterface({
     recognitionRef.current = recognition;
     setIsListening(true);
   };
+
+  // Update the useEffect for saving progress on unmount
+  useEffect(() => {
+    return () => {
+      // Save progress when component unmounts if there's an active session
+      if (sessionStartTime && !lessonCompleted && sessionDuration > 0) {
+        if (user) {
+          courseProgressService.savePartialProgress(
+            user.uid,
+            chapterId,
+            lessonId,
+            sessionDuration,
+            messages
+          ).catch(error => {
+            console.error('Error saving progress on unmount:', error);
+            // Try localStorage as fallback
+            saveProgressToLocalStorage();
+          });
+        } else {
+          // No user, save to localStorage
+          saveProgressToLocalStorage();
+        }
+      }
+    };
+  }, [user, sessionStartTime, lessonCompleted, sessionDuration, messages, chapterId, lessonId]);
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
@@ -502,6 +598,38 @@ export default function CourseChatInterface({
           </p>
         </div>
       </div>
+
+      <AlertDialog open={showExitDialog} onOpenChange={setShowExitDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Exit Lesson?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <div className="space-y-4">
+                <p>Your progress will be saved, but the lesson won't be marked as complete until you spend the full 15 minutes.</p>
+                <div className="bg-blue-50 p-3 rounded-lg">
+                  <h4 className="font-medium text-blue-800">Current Progress:</h4>
+                  <ul className="mt-2 space-y-1 text-sm text-blue-700">
+                    <li>• Time spent: {formatTime(sessionDuration)}</li>
+                    <li>• Messages exchanged: {messages.length}</li>
+                  </ul>
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Continue Lesson</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmExit}>
+              Save & Exit
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {firebaseError && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mx-4 mb-2">
+          <p className="text-sm">{firebaseError}</p>
+        </div>
+      )}
     </div>
   );
 }

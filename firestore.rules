@@ -2,22 +2,32 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Allow users to read and write their own chats
-    match /chats/{chatId} {
-      allow create: if request.auth != null 
-        && request.resource.data.userId == request.auth.uid;
-      allow read, update, delete: if request.auth != null 
-        && resource.data.userId == request.auth.uid;
-    }
-
-    // Existing user rules
+    // Allow authenticated users to read and write their own data
     match /users/{userId} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow access to nested collections under the user's document
+      match /progress/{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
-
-    // Admin collection rules
-    match /admins/{adminId} {
-      allow read: if request.auth != null && request.auth.token.admin == true;
+    
+    // Allow authenticated users to read course data
+    match /courses/{courseId} {
+      allow read: if request.auth != null;
+      
+      match /chapters/{chapterId} {
+        allow read: if request.auth != null;
+        
+        match /lessons/{lessonId} {
+          allow read: if request.auth != null;
+        }
+      }
+    }
+    
+    // Deny all other access by default
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 } 

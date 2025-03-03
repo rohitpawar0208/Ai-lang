@@ -10,7 +10,8 @@ import {
   collection, 
   query, 
   where, 
-  getDocs 
+  getDocs,
+  serverTimestamp
 } from 'firebase/firestore';
 
 interface Message {
@@ -50,6 +51,23 @@ interface UserStats {
   }[];
 }
 
+// Helper function to handle Firebase permission errors
+const handleFirebaseError = (error: any, fallbackValue: any = null) => {
+  console.error('Firebase operation failed:', error);
+  
+  // Check if it's a permission error
+  if (error.code === 'permission-denied' || 
+      error.message?.includes('Missing or insufficient permissions')) {
+    console.warn('Permission denied. This is likely due to Firestore security rules.');
+    
+    // Return a fallback value instead of throwing
+    return fallbackValue;
+  }
+  
+  // For other errors, we might want to rethrow
+  throw error;
+};
+
 export const courseProgressService = {
   /**
    * Get lesson progress for a specific user and lesson
@@ -65,8 +83,7 @@ export const courseProgressService = {
       
       return null;
     } catch (error) {
-      console.error('Error getting lesson progress:', error);
-      throw error;
+      return handleFirebaseError(error, null);
     }
   },
   
@@ -88,8 +105,7 @@ export const courseProgressService = {
       
       return progress;
     } catch (error) {
-      console.error('Error getting chapter progress:', error);
-      throw error;
+      return handleFirebaseError(error, {});
     }
   },
   
@@ -109,12 +125,13 @@ export const courseProgressService = {
           started: false,
           completed: false,
           minutesSpent: 0,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          timestamp: serverTimestamp()
         });
       }
+      return true;
     } catch (error) {
-      console.error('Error initializing lesson progress:', error);
-      throw error;
+      return handleFirebaseError(error, false);
     }
   },
   
@@ -127,11 +144,12 @@ export const courseProgressService = {
       
       await updateDoc(progressRef, {
         started: true,
-        lastAttempt: Timestamp.now()
+        lastAttempt: Timestamp.now(),
+        timestamp: serverTimestamp()
       });
+      return true;
     } catch (error) {
-      console.error('Error starting lesson session:', error);
-      throw error;
+      return handleFirebaseError(error, false);
     }
   },
   
@@ -156,7 +174,8 @@ export const courseProgressService = {
           ...m,
           timestamp: Timestamp.fromDate(m.timestamp)
         })),
-        completedAt: Timestamp.now()
+        completedAt: Timestamp.now(),
+        timestamp: serverTimestamp()
       }, { merge: true });
 
       // Unlock next lesson
@@ -174,13 +193,15 @@ export const courseProgressService = {
           completed: false,
           minutesSpent: 0,
           unlockedAt: Timestamp.now(),
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          timestamp: serverTimestamp()
         });
       } else {
         // Update existing next lesson progress
         await updateDoc(nextLessonRef, {
           unlocked: true,
-          unlockedAt: Timestamp.now()
+          unlockedAt: Timestamp.now(),
+          timestamp: serverTimestamp()
         });
       }
 
@@ -197,13 +218,106 @@ export const courseProgressService = {
           minutes: Math.floor(sessionDuration / 60),
           lessonId: `${chapterId}_${lessonId}`,
           timestamp: new Date().toISOString()
-        })
+        }),
+        timestamp: serverTimestamp()
       });
       
       return true;
     } catch (error) {
-      console.error('Error completing lesson:', error);
-      throw error;
+      return handleFirebaseError(error, false);
+    }
+  },
+  
+  /**
+   * Save partial progress when user leaves a lesson before completion
+   */
+  savePartialProgress: async (
+    userId: string, 
+    chapterId: string, 
+    lessonId: string, 
+    sessionDuration: number,
+    messages: Message[]
+  ) => {
+    try {
+      if (sessionDuration <= 0) {
+        console.log('No progress to save - session duration is 0');
+        return false;
+      }
+
+      // First check if the document exists
+      const progressRef = doc(db, 'users', userId, 'progress', `${chapterId}_${lessonId}`);
+      const progressDoc = await getDoc(progressRef);
+      
+      if (!progressDoc.exists()) {
+        // Create the document first
+        await setDoc(progressRef, {
+          chapterId,
+          lessonId,
+          unlocked: true,
+          started: true,
+          completed: false,
+          minutesSpent: Math.floor(sessionDuration / 60),
+          messages: messages.map(m => ({
+            ...m,
+            timestamp: Timestamp.fromDate(m.timestamp)
+          })),
+          lastAttempt: Timestamp.now(),
+          createdAt: new Date().toISOString(),
+          timestamp: serverTimestamp()
+        });
+      } else {
+        // Update existing document
+        await setDoc(progressRef, {
+          lastAttempt: Timestamp.now(),
+          minutesSpent: increment(Math.floor(sessionDuration / 60)),
+          messages: messages.map(m => ({
+            ...m,
+            timestamp: Timestamp.fromDate(m.timestamp)
+          })),
+          timestamp: serverTimestamp()
+        }, { merge: true });
+      }
+
+      // Update user stats
+      const userDocRef = doc(db, 'users', userId);
+      const userDoc = await getDoc(userDocRef);
+      
+      if (!userDoc.exists()) {
+        // Create user document if it doesn't exist
+        await setDoc(userDocRef, {
+          totalMinutes: Math.floor(sessionDuration / 60),
+          lessonsCompleted: 0,
+          lastActiveDay: new Date().toISOString().split('T')[0],
+          [`activityLog.${new Date().toISOString().split('T')[0]}`]: 1,
+          weeklyProgress: [{
+            day: new Date().toLocaleString('en-US', { weekday: 'short' }),
+            minutes: Math.floor(sessionDuration / 60),
+            lessonId: `${chapterId}_${lessonId}`,
+            timestamp: new Date().toISOString(),
+            partial: true
+          }],
+          timestamp: serverTimestamp()
+        });
+      } else {
+        // Update existing user document
+        await updateDoc(userDocRef, {
+          totalMinutes: increment(Math.floor(sessionDuration / 60)),
+          lastActiveDay: new Date().toISOString().split('T')[0],
+          [`activityLog.${new Date().toISOString().split('T')[0]}`]: increment(1),
+          weeklyProgress: arrayUnion({
+            day: new Date().toLocaleString('en-US', { weekday: 'short' }),
+            minutes: Math.floor(sessionDuration / 60),
+            lessonId: `${chapterId}_${lessonId}`,
+            timestamp: new Date().toISOString(),
+            partial: true
+          }),
+          timestamp: serverTimestamp()
+        });
+      }
+      
+      return true;
+    } catch (error) {
+      return handleFirebaseError(error, false);
     }
   },
   
@@ -213,17 +327,40 @@ export const courseProgressService = {
   saveChatMessage: async (userId: string, chapterId: string, lessonId: string, message: Message) => {
     try {
       const progressRef = doc(db, 'users', userId, 'progress', `${chapterId}_${lessonId}`);
+      const progressDoc = await getDoc(progressRef);
       
-      await updateDoc(progressRef, {
-        messages: arrayUnion({
-          ...message,
-          timestamp: Timestamp.fromDate(message.timestamp)
-        }),
-        lastAttempt: Timestamp.now()
-      });
+      if (!progressDoc.exists()) {
+        // Create the document first
+        await setDoc(progressRef, {
+          chapterId,
+          lessonId,
+          unlocked: true,
+          started: true,
+          completed: false,
+          minutesSpent: 0,
+          messages: [{
+            ...message,
+            timestamp: Timestamp.fromDate(message.timestamp)
+          }],
+          lastAttempt: Timestamp.now(),
+          createdAt: new Date().toISOString(),
+          timestamp: serverTimestamp()
+        });
+      } else {
+        // Update existing document
+        await updateDoc(progressRef, {
+          messages: arrayUnion({
+            ...message,
+            timestamp: Timestamp.fromDate(message.timestamp)
+          }),
+          lastAttempt: Timestamp.now(),
+          timestamp: serverTimestamp()
+        });
+      }
+      
+      return true;
     } catch (error) {
-      console.error('Error saving chat message:', error);
-      throw error;
+      return handleFirebaseError(error, false);
     }
   },
   
@@ -241,8 +378,7 @@ export const courseProgressService = {
       
       return null;
     } catch (error) {
-      console.error('Error getting user stats:', error);
-      throw error;
+      return handleFirebaseError(error, null);
     }
   },
   
@@ -252,10 +388,25 @@ export const courseProgressService = {
   updateUserStats: async (userId: string, stats: Partial<UserStats>) => {
     try {
       const userDocRef = doc(db, 'users', userId);
-      await updateDoc(userDocRef, stats);
+      const userDoc = await getDoc(userDocRef);
+      
+      if (!userDoc.exists()) {
+        // Create the document if it doesn't exist
+        await setDoc(userDocRef, {
+          ...stats,
+          timestamp: serverTimestamp()
+        });
+      } else {
+        // Update existing document
+        await updateDoc(userDocRef, {
+          ...stats,
+          timestamp: serverTimestamp()
+        });
+      }
+      
+      return true;
     } catch (error) {
-      console.error('Error updating user stats:', error);
-      throw error;
+      return handleFirebaseError(error, false);
     }
   }
 };

@@ -182,10 +182,20 @@ const LessonUI: React.FC<LessonUIProps> = ({
                 <h3 className="font-medium text-gray-800">{lesson.title}</h3>
                 {lesson.description && <p className="text-sm text-gray-600">{lesson.description}</p>}
                 {lesson.minutesSpent && lesson.minutesSpent > 0 && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Time spent: {lesson.minutesSpent} min
-                    {lesson.lastAttempt && ` • Last attempt: ${lesson.lastAttempt.toLocaleDateString()}`}
-                  </p>
+                  <div className="mt-1">
+                    <p className="text-xs text-gray-500">
+                      Time spent: {lesson.minutesSpent} min
+                      {lesson.lastAttempt && ` • Last attempt: ${lesson.lastAttempt.toLocaleDateString()}`}
+                    </p>
+                    {!lesson.isCompleted && lesson.minutesSpent > 0 && (
+                      <div className="mt-1 relative h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div 
+                          className="absolute left-0 top-0 h-full bg-yellow-400 rounded-full"
+                          style={{ width: `${Math.min((lesson.minutesSpent / 15) * 100, 100)}%` }}
+                        />
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
               <div className="flex gap-2">
